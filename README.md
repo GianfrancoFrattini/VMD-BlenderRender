@@ -1,17 +1,15 @@
 # VMD-BlenderRender
 
-Plugin de VMD que exporta la escena actual a OBJ y la renderiza con Blender.
-Incluye render de imagen, perfiles de materiales Principled BSDF y exportacion
-de peliculas MP4.
+The VMD Blender Render script connects VMD with Blender to produce high-quality renderings of images and movies quickly. It also solves the issue of rendering size in VMD.
 
-Nombre visible dentro de VMD: `Blender Render`.
+Visible name in VMD: `Blender Render`.
 
 > **GitHub description:** A VMD plugin that exports molecular scenes to Blender
 > for high-quality still-image and MP4 trajectory rendering.
 
-## Archivos para subir a GitHub
+## Files to Upload to GitHub
 
-Subi solamente estos tres archivos en la raiz del repositorio:
+Upload only these three files to the repository root:
 
 ```text
 render2K.tcl
@@ -19,104 +17,106 @@ render2k_english.tcl
 README.md
 ```
 
-- `render2K.tcl`: plugin principal con interfaz en espanol.
-- `render2k_english.tcl`: interfaz y mensajes en ingles.
-- `README.md`: esta guia.
+- `render2K.tcl`: main plugin with the Spanish interface.
+- `render2k_english.tcl`: English interface and messages.
+- `README.md`: this guide.
 
-No subas los archivos generados por un render, como `.obj`, `.mtl`,
-`*_blender.py`, carpetas `*_frames`, PNG o MP4.
+Do not upload render-generated files such as `.obj`, `.mtl`, `*_blender.py`,
+`*_frames` directories, PNG files, or MP4 files.
 
-## Requisitos
+## Requirements
 
-- VMD con soporte Tcl/Tk y renderizador `Wavefront`.
-- Blender disponible como el comando `blender` en `PATH`.
-- Blender 3.6 o superior recomendado. Blender 5.2.2 LTS fue verificado con un
-  render headless minimo.
-- FFmpeg solo para crear peliculas MP4.
+- VMD with Tcl/Tk support and the `Wavefront` renderer.
+- Blender available as the `blender` command in `PATH`.
+- Blender 3.6 or newer is recommended. Blender 5.2.2 LTS was verified with a
+  minimal headless render.
+- FFmpeg is required only for MP4 movie rendering.
 
-El script es para Linux. Cycles intenta usar OptiX o CUDA en GPUs NVIDIA y usa
-CPU si no encuentra una GPU compatible. Eevee es la alternativa rapida.
+The script targets Linux. Cycles tries OptiX or CUDA on NVIDIA GPUs and falls
+back to CPU rendering when no compatible GPU is available. Eevee is the faster
+alternative.
 
-Comproba Blender antes de abrir VMD:
+Check Blender before starting VMD:
 
 ```bash
 blender --version
 ```
 
-## Instalacion
+## Installation
 
-Clona o descarga el repositorio en una ubicacion fija. Por ejemplo:
+Clone or download the repository to a permanent location, for example:
 
 ```text
 $HOME/vmd_plugins/
 ```
 
-Luego agrega una sola linea a `~/.vmdrc`.
+Add one line to `~/.vmdrc`.
 
-Interfaz en espanol:
+Spanish interface:
 
 ```tcl
 source [file join $env(HOME) vmd_plugins render2K.tcl]
 ```
 
-Interfaz en ingles:
+English interface:
 
 ```tcl
 source [file join $env(HOME) vmd_plugins render2k_english.tcl]
 ```
 
-No cargues ambos archivos. La version inglesa necesita que `render2K.tcl`
-siga en el mismo directorio.
+Do not load both files. The English version requires `render2K.tcl` to remain
+in the same directory.
 
-Si VMD no encuentra Blender, agrega su directorio a `PATH` antes del `source`:
+If VMD cannot find Blender, add its directory to `PATH` before the `source`
+command:
 
 ```tcl
-set env(PATH) "/ruta/al/directorio/de/blender:$env(PATH)"
+set env(PATH) "/path/to/blender-directory:$env(PATH)"
 source [file join $env(HOME) vmd_plugins render2K.tcl]
 ```
 
-Reinicia VMD y abre el plugin desde:
+Restart VMD and open the plugin from:
 
 ```text
 Extensions -> Rendering -> Blender Render
 ```
 
-La ventana se puede cerrar y volver a abrir desde ese menu sin reiniciar VMD.
+The window can be closed and reopened from this menu without restarting VMD.
 
-## Uso rapido
+## Quick Use
 
-1. Carga una molecula en VMD y configura sus representaciones.
-2. Abre `Extensions -> Rendering -> Blender Render`.
-3. Elige Cycles o Eevee, resolucion, nombre de salida y formato.
-4. Ajusta perfiles en la pestana de materiales si lo necesitas.
-5. Pulsa `RENDERIZAR IMAGEN` o `RENDER IMAGE`.
+1. Load a molecule in VMD and configure its representations.
+2. Open `Extensions -> Rendering -> Blender Render`.
+3. Select Cycles or Eevee, resolution, output name, and format.
+4. Adjust material profiles if needed.
+5. Click `RENDERIZAR IMAGEN` or `RENDER IMAGE`.
 
-Para una pelicula, usa la pestana de pelicula, define el rango de frames y el
-nombre del MP4. FFmpeg debe estar instalado para esta opcion.
+For a movie, use the movie tab, define the frame range, and enter the MP4 name.
+FFmpeg must be installed for this option.
 
-El plugin genera OBJ, MTL y un script Python de Blender junto al archivo de
-salida. Desactiva el auto-render de Blender si quieres revisar ese script antes
-de renderizar manualmente:
+The plugin generates OBJ, MTL, and Blender Python files next to the output.
+Disable Blender auto-render when you want to inspect the script before rendering
+it manually:
 
 ```bash
-blender -b -P nombre_blender.py
+blender -b -P output_blender.py
 ```
 
-## Imagenes opcionales para GitHub
+## Optional GitHub Images
 
-No son necesarias para que funcione el plugin, pero mejoran mucho el repositorio.
-Si las agregas, crea la carpeta `assets/` y usa estos nombres:
+Images are not required for the plugin to work, but they improve the repository.
+If you add them, create an `assets/` directory and use these suggested names:
 
-| Archivo sugerido | Que mostrar |
+| Suggested file | What to show |
 | --- | --- |
-| `assets/render2k-interface.png` | Ventana principal de Blender Render abierta en VMD |
-| `assets/render2k-materials.png` | Pestana de materiales con los perfiles Blender |
-| `assets/render2k-example.png` | Comparacion: vista de VMD y render final de Blender |
-| `assets/render2k-movie.png` | Pestana de pelicula o un frame final del MP4 |
+| `assets/render2k-interface.png` | Blender Render main window open in VMD |
+| `assets/render2k-materials.png` | Material tab with Blender profiles |
+| `assets/render2k-example.png` | Comparison between the VMD view and the final Blender render |
+| `assets/render2k-movie.png` | Movie tab or a final MP4 frame |
 
-Cuando tengas las capturas, puedes agregarlas al README con este formato:
+After adding the screenshots, include them in the README like this:
 
 ```md
-![Render2K interface](assets/render2k-interface.png)
-![Render2K example](assets/render2k-example.png)
+![Blender Render interface](assets/render2k-interface.png)
+![Blender Render example](assets/render2k-example.png)
 ```

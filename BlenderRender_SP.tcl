@@ -1,11 +1,11 @@
 ##
-## Blender Render (v5.1) - Renderizador Blender para VMD (ES)
+## Blender Render (v5.2) - Renderizador Blender para VMD (ES)
 ## Perfiles Principled BSDF configurables desde VMD.
 ##
 
 # No intenta reemplazar una version ya registrada al recargar el plugin en VMD.
 if {[package provide render2k] eq ""} {
-    package provide render2k 5.1
+    package provide render2k 5.2
 }
 
 # Forzar la eliminacion del namespace anterior para que el menu se actualice
@@ -44,11 +44,28 @@ namespace eval ::Render2K:: {
     variable blender_autorun 1
     variable blender_rotate 1
 
-    # Fondo Blender (World)
+    # Iluminacion Blender
+    # Tres luces tipo SUN forman un esquema de estudio estable, independiente
+    # del tamano de la molecula. El multiplicador global permite aclarar u
+    # oscurecer el render sin retocar las tres luces por separado.
+    variable blender_light_multiplier 1.0
+    variable blender_key_strength 4.0
+    variable blender_fill_strength 2.0
+    variable blender_rim_strength 2.5
+    variable blender_sun_angle 20.0
+    variable blender_ambient_strength 0.65
+    variable blender_exposure 0.35
+
+    # Fondo / World Blender
     variable blender_bg_strength 1.0
     variable bg_color "white"
-    # flat: visible solo para la camara; world: tambien ilumina/refleja.
+    # flat: fondo visible + ambiente neutro; world: el color del fondo ilumina;
+    # hdri: usa una imagen HDR/EXR para iluminar/reflejar.
     variable blender_background_mode "flat"
+    variable blender_hdri_path ""
+    variable blender_hdri_strength 1.0
+    variable blender_hdri_rotation 0.0
+    variable blender_hdri_visible 0
 
     # Pelicula Blender: cada frame de VMD se exporta a Wavefront y un unico
     # proceso Blender renderiza toda la secuencia antes de codificar el MP4.
@@ -634,8 +651,19 @@ proc ::Render2K::blender_settings_snapshot {} {
     variable blender_samples
     variable blender_denoise
     variable blender_rotate
+    variable blender_light_multiplier
+    variable blender_key_strength
+    variable blender_fill_strength
+    variable blender_rim_strength
+    variable blender_sun_angle
+    variable blender_ambient_strength
+    variable blender_exposure
     variable blender_bg_strength
     variable blender_background_mode
+    variable blender_hdri_path
+    variable blender_hdri_strength
+    variable blender_hdri_rotation
+    variable blender_hdri_visible
     variable blender_mat_map
     set matmap [dict create]
     foreach key [lsort [array names blender_mat_map]] {
@@ -646,9 +674,20 @@ proc ::Render2K::blender_settings_snapshot {} {
         samples $blender_samples \
         denoise $blender_denoise \
         rotate $blender_rotate \
+        light_multiplier $blender_light_multiplier \
+        key_strength $blender_key_strength \
+        fill_strength $blender_fill_strength \
+        rim_strength $blender_rim_strength \
+        sun_angle $blender_sun_angle \
+        ambient_strength $blender_ambient_strength \
+        exposure $blender_exposure \
         bg_strength $blender_bg_strength \
         background_mode $blender_background_mode \
         bg_rgb [blender_bg_rgb] \
+        hdri_path $blender_hdri_path \
+        hdri_strength $blender_hdri_strength \
+        hdri_rotation $blender_hdri_rotation \
+        hdri_visible $blender_hdri_visible \
         matmap $matmap]
 }
 
@@ -669,29 +708,68 @@ proc ::Render2K::gen_blender_py {pyscript objfile outfile width height pairs wav
         set settings [blender_settings_snapshot]
     }
     foreach {width height} [validate_resolution $width $height] { break }
-    set py [open $pyscript w]
     set rot "True"; if {![dict get $settings rotate]} { set rot "False" }
     set requested_engine "CYCLES"
     if {[string toupper [dict get $settings render_engine]] eq "EEVEE"} {
         set requested_engine "EEVEE"
     }
+
     set background_mode "FLAT"
-    if {[string tolower [dict get $settings background_mode]] eq "world"} {
-        set background_mode "WORLD"
+    switch -- [string tolower [dict get $settings background_mode]] {
+        world { set background_mode "WORLD" }
+        hdri  { set background_mode "HDRI" }
     }
+
     set samples 128
     if {[string is integer -strict [dict get $settings samples]]} {
         set samples [expr {max(16, min(2048, [dict get $settings samples]))}]
     }
-    set bg_strength 1.0
-    if {[string is double -strict [dict get $settings bg_strength]]} {
-        set bg_strength [expr {max(0.0, min(3.0, double([dict get $settings bg_strength])))}]
+
+    # Limites deliberadamente amplios pero seguros para evitar renders negros
+    # por errores de entrada y, a la vez, permitir escenas muy brillantes.
+    set light_multiplier 1.0
+    if {[string is double -strict [dict get $settings light_multiplier]]} {
+        set light_multiplier [expr {max(0.0, min(5.0, double([dict get $settings light_multiplier])))}]
+    }
+    foreach {name fallback low high} {
+        key_strength 4.0 0.0 20.0
+        fill_strength 2.0 0.0 20.0
+        rim_strength 2.5 0.0 20.0
+        sun_angle 20.0 0.1 90.0
+        ambient_strength 0.65 0.0 5.0
+        exposure 0.35 -5.0 5.0
+        bg_strength 1.0 0.0 10.0
+        hdri_strength 1.0 0.0 10.0
+        hdri_rotation 0.0 -360.0 360.0
+    } {
+        set value $fallback
+        if {[dict exists $settings $name] && [string is double -strict [dict get $settings $name]]} {
+            set value [expr {max($low, min($high, double([dict get $settings $name])))}]
+        }
+        set $name $value
+    }
+
+    set hdri_visible "False"
+    if {[dict exists $settings hdri_visible] && [dict get $settings hdri_visible]} {
+        set hdri_visible "True"
+    }
+    set hdri_path ""
+    if {[dict exists $settings hdri_path]} { set hdri_path [string trim [dict get $settings hdri_path]] }
+    if {$background_mode eq "HDRI"} {
+        if {$hdri_path eq ""} {
+            return -code error "Seleccionaste HDRI pero no indicaste un archivo .hdr/.exr."
+        }
+        if {![file exists $hdri_path]} {
+            return -code error "No se encontro el HDRI: $hdri_path"
+        }
+        set hdri_path [file normalize $hdri_path]
     }
 
     set bg_rgb [dict get $settings bg_rgb]
     set bg_r [lindex $bg_rgb 0]
     set bg_g [lindex $bg_rgb 1]
     set bg_b [lindex $bg_rgb 2]
+    set py [open $pyscript w]
 
     if {[dict size $camera] == 0} {
         set camera [blender_camera_snapshot]
@@ -704,7 +782,7 @@ proc ::Render2K::gen_blender_py {pyscript objfile outfile width height pairs wav
     set ed [join $vmd_eyedir {, }]
     set eu [join $vmd_eyeup {, }]
 
-    puts $py "# Auto-generado por Render2K Blender (VMD) v5.1"
+    puts $py "# Auto-generado por Render2K Blender (VMD) v5.2"
     puts $py "import bpy, math, mathutils, time"
     puts $py ""
     puts $py "OBJ  = [py_quote $objfile]"
@@ -722,6 +800,17 @@ proc ::Render2K::gen_blender_py {pyscript objfile outfile width height pairs wav
     puts $py "VMD_SCREEN_HEIGHT = $vmd_vsize"
     puts $py "VMD_BG = ($bg_r, $bg_g, $bg_b)"
     puts $py "VMD_BG_STRENGTH = $bg_strength"
+    puts $py "LIGHT_MULTIPLIER = $light_multiplier"
+    puts $py "KEY_STRENGTH = $key_strength"
+    puts $py "FILL_STRENGTH = $fill_strength"
+    puts $py "RIM_STRENGTH = $rim_strength"
+    puts $py "SUN_ANGLE = $sun_angle"
+    puts $py "AMBIENT_STRENGTH = $ambient_strength"
+    puts $py "EXPOSURE = $exposure"
+    puts $py "HDRI_PATH = [py_quote $hdri_path]"
+    puts $py "HDRI_STRENGTH = $hdri_strength"
+    puts $py "HDRI_ROTATION = $hdri_rotation"
+    puts $py "HDRI_VISIBLE = $hdri_visible"
 
     # Perfiles Principled BSDF configurados en la interfaz de Render2K.
     puts $py "MATMAP = {}"
@@ -888,50 +977,86 @@ proc ::Render2K::gen_blender_py {pyscript objfile outfile width height pairs wav
     puts $py {cam.clip_end = 100000.0}
     puts $py ""
 
-    # Iluminacion
+    # Iluminacion de estudio. SUN hace que el resultado no dependa del tamano
+    # absoluto del modelo molecular. Se exponen intensidades y suavidad en VMD.
     puts $py "def mk_sun(name, energy, rot, loc=(0,0,0)):"
     puts $py "    li = bpy.data.lights.new(name, 'SUN')"
-    puts $py "    li.energy = energy"
-    puts $py "    li.angle = math.radians(15)"
+    puts $py "    li.energy = max(0.0, energy * LIGHT_MULTIPLIER)"
+    puts $py "    li.angle = math.radians(SUN_ANGLE)"
     puts $py "    ob = bpy.data.objects.new(name, li)"
     puts $py "    ob.rotation_euler = rot"
     puts $py "    ob.location = loc"
     puts $py "    bpy.context.scene.collection.objects.link(ob)"
     puts $py "    return ob"
-    puts $py {mk_sun("Key",  3.0, (math.radians(45),  math.radians(15),  math.radians(30)))}
-    puts $py {mk_sun("Fill", 1.2, (math.radians(30),  math.radians(-40), math.radians(-120)))}
-    puts $py {mk_sun("Rim",  2.0, (math.radians(-35), math.radians(20), math.radians(170)))}
+    puts $py {mk_sun("R2K Key",  KEY_STRENGTH,  (math.radians(45),  math.radians(15),  math.radians(30)))}
+    puts $py {mk_sun("R2K Fill", FILL_STRENGTH, (math.radians(30),  math.radians(-40), math.radians(-120)))}
+    puts $py {mk_sun("R2K Rim",  RIM_STRENGTH,  (math.radians(-35), math.radians(20),  math.radians(170)))}
+    puts $py {print("R2K_LIGHTS: key=%.3f fill=%.3f rim=%.3f multiplier=%.3f ambient=%.3f exposure=%.3f" % (KEY_STRENGTH, FILL_STRENGTH, RIM_STRENGTH, LIGHT_MULTIPLIER, AMBIENT_STRENGTH, EXPOSURE))}
 
-    # Fondo visible e iluminacion del mundo
+    # Fondo visible e iluminacion del World.
+    # FLAT: la camara ve el color elegido (blanco por defecto), mientras que
+    #       materiales/reflejos reciben un ambiente blanco regulable. Evita el
+    #       problema anterior donde el World era negro y la escena quedaba oscura.
+    # WORLD: el color del World ilumina y tambien es visible.
+    # HDRI: la textura ilumina/refleja; por defecto la camara sigue viendo el
+    #       fondo elegido, aunque se puede activar "Ver HDRI".
     puts $py {sc = bpy.context.scene}
     puts $py {world = bpy.data.worlds.new("R2KWorld")}
+    puts $py {world.use_nodes = True}
     puts $py {sc.world = world}
     puts $py {world_nt = world.node_tree}
-    puts $py {if world_nt is None:}
-    puts $py {    world.use_nodes = True}
-    puts $py {    world_nt = world.node_tree}
     puts $py {if world_nt is None: raise RuntimeError("No se pudo crear el World node tree")}
     puts $py {world_nt.nodes.clear()}
     puts $py {world_out = world_nt.nodes.new('ShaderNodeOutputWorld')}
+    puts $py {visible_bg = world_nt.nodes.new('ShaderNodeBackground')}
+    puts $py {visible_bg.name = 'R2K Camera Background'}
+    puts $py {visible_bg.inputs['Color'].default_value = (*VMD_BG, 1.0)}
+    puts $py {visible_bg.inputs['Strength'].default_value = 1.0}
     puts $py {if BACKGROUND_MODE == 'FLAT':}
-    puts $py {    # La camara ve el color, pero iluminacion y reflejos reciben negro.}
-    puts $py {    dark_bg = world_nt.nodes.new('ShaderNodeBackground')}
-    puts $py {    dark_bg.inputs['Color'].default_value = (0.0, 0.0, 0.0, 1.0)}
-    puts $py {    dark_bg.inputs['Strength'].default_value = 0.0}
-    puts $py {    visible_bg = world_nt.nodes.new('ShaderNodeBackground')}
-    puts $py {    visible_bg.inputs['Color'].default_value = (*VMD_BG, 1.0)}
-    puts $py {    visible_bg.inputs['Strength'].default_value = 1.0}
+    puts $py {    ambient_bg = world_nt.nodes.new('ShaderNodeBackground')}
+    puts $py {    ambient_bg.name = 'R2K Ambient'}
+    puts $py {    ambient_bg.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)}
+    puts $py {    ambient_bg.inputs['Strength'].default_value = AMBIENT_STRENGTH}
     puts $py {    light_path = world_nt.nodes.new('ShaderNodeLightPath')}
     puts $py {    mix_bg = world_nt.nodes.new('ShaderNodeMixShader')}
     puts $py {    world_nt.links.new(light_path.outputs['Is Camera Ray'], mix_bg.inputs[0])}
-    puts $py {    world_nt.links.new(dark_bg.outputs[0], mix_bg.inputs[1])}
+    puts $py {    world_nt.links.new(ambient_bg.outputs[0], mix_bg.inputs[1])}
     puts $py {    world_nt.links.new(visible_bg.outputs[0], mix_bg.inputs[2])}
     puts $py {    world_nt.links.new(mix_bg.outputs[0], world_out.inputs['Surface'])}
-    puts $py {else:}
+    puts $py {elif BACKGROUND_MODE == 'WORLD':}
     puts $py {    world_bg = world_nt.nodes.new('ShaderNodeBackground')}
+    puts $py {    world_bg.name = 'R2K World Color'}
     puts $py {    world_bg.inputs['Color'].default_value = (*VMD_BG, 1.0)}
     puts $py {    world_bg.inputs['Strength'].default_value = VMD_BG_STRENGTH}
     puts $py {    world_nt.links.new(world_bg.outputs[0], world_out.inputs['Surface'])}
+    puts $py {elif BACKGROUND_MODE == 'HDRI':}
+    puts $py {    env_tex = world_nt.nodes.new('ShaderNodeTexEnvironment')}
+    puts $py {    env_tex.name = 'R2K HDRI'}
+    puts $py {    try:}
+    puts $py {        env_tex.image = bpy.data.images.load(HDRI_PATH, check_existing=True)}
+    puts $py {    except Exception as exc:}
+    puts $py {        raise RuntimeError("No se pudo cargar HDRI %s: %s" % (HDRI_PATH, exc)) from exc}
+    puts $py {    texcoord = world_nt.nodes.new('ShaderNodeTexCoord')}
+    puts $py {    mapping = world_nt.nodes.new('ShaderNodeMapping')}
+    puts $py {    mapping.inputs['Rotation'].default_value[2] = math.radians(HDRI_ROTATION)}
+    puts $py {    hdri_bg = world_nt.nodes.new('ShaderNodeBackground')}
+    puts $py {    hdri_bg.name = 'R2K HDRI Lighting'}
+    puts $py {    hdri_bg.inputs['Strength'].default_value = HDRI_STRENGTH}
+    puts $py {    world_nt.links.new(texcoord.outputs['Generated'], mapping.inputs['Vector'])}
+    puts $py {    world_nt.links.new(mapping.outputs['Vector'], env_tex.inputs['Vector'])}
+    puts $py {    world_nt.links.new(env_tex.outputs['Color'], hdri_bg.inputs['Color'])}
+    puts $py {    if HDRI_VISIBLE:}
+    puts $py {        world_nt.links.new(hdri_bg.outputs[0], world_out.inputs['Surface'])}
+    puts $py {    else:}
+    puts $py {        light_path = world_nt.nodes.new('ShaderNodeLightPath')}
+    puts $py {        mix_bg = world_nt.nodes.new('ShaderNodeMixShader')}
+    puts $py {        world_nt.links.new(light_path.outputs['Is Camera Ray'], mix_bg.inputs[0])}
+    puts $py {        world_nt.links.new(hdri_bg.outputs[0], mix_bg.inputs[1])}
+    puts $py {        world_nt.links.new(visible_bg.outputs[0], mix_bg.inputs[2])}
+    puts $py {        world_nt.links.new(mix_bg.outputs[0], world_out.inputs['Surface'])}
+    puts $py {else:}
+    puts $py {    raise RuntimeError("Modo de fondo desconocido: %s" % BACKGROUND_MODE)}
+    puts $py {print("R2K_WORLD: mode=%s world=%.3f hdri=%.3f hdri_visible=%s" % (BACKGROUND_MODE, VMD_BG_STRENGTH, HDRI_STRENGTH, HDRI_VISIBLE))}
 
     # Motor Blender y sus opciones especificas
     puts $py {def _select_engine(scene, requested):}
@@ -995,18 +1120,20 @@ proc ::Render2K::gen_blender_py {pyscript objfile outfile width height pairs wav
     puts $py {sc.render.resolution_x = RESX}
     puts $py {sc.render.resolution_y = RESY}
     puts $py {sc.render.resolution_percentage = 100}
-    puts $py {transforms = ('Standard',) if BACKGROUND_MODE == 'FLAT' else ('AgX', 'Filmic', 'Standard')}
+    puts $py {# Standard conserva un fondo blanco puro. Si el HDRI es visible, AgX}
+    puts $py {# suele dar un resultado fotografico mas agradable y mayor rango dinamico.}
+    puts $py {transforms = ('AgX', 'Filmic', 'Standard') if (BACKGROUND_MODE == 'HDRI' and HDRI_VISIBLE) else ('Standard',)}
     puts $py {for transform in transforms:}
     puts $py {    try:}
     puts $py {        sc.view_settings.view_transform = transform}
     puts $py {        break}
     puts $py {    except Exception:}
     puts $py {        pass}
-    puts $py {if BACKGROUND_MODE == 'FLAT' and sc.view_settings.view_transform != 'Standard':}
-    puts $py {    raise RuntimeError("El fondo plano requiere el transform Standard")}
-    puts $py {if BACKGROUND_MODE == 'FLAT':}
-    puts $py {    sc.view_settings.exposure = 0.0}
-    puts $py {    sc.view_settings.gamma = 1.0}
+    puts $py {if BACKGROUND_MODE != 'HDRI' or not HDRI_VISIBLE:}
+    puts $py {    if sc.view_settings.view_transform != 'Standard':}
+    puts $py {        raise RuntimeError("El fondo blanco/plano requiere el transform Standard")}
+    puts $py {sc.view_settings.exposure = EXPOSURE}
+    puts $py {sc.view_settings.gamma = 1.0}
     puts $py {sc.render.image_settings.file_format = 'PNG'}
     puts $py {sc.render.filepath = OUT}
     puts $py ""
@@ -2554,20 +2681,87 @@ proc ::Render2K::close_window {} {
 
 proc ::Render2K::show_tab {t} {
     variable w
-    foreach tab {r m v} {
+    foreach tab {r l m v} {
         if {[winfo exists $w.main.$tab]} { pack forget $w.main.$tab }
     }
     pack $w.main.$t -fill both -expand 1 -padx 4 -pady 4
+}
+
+proc ::Render2K::choose_hdri {} {
+    variable blender_hdri_path
+    set types [list \
+        [list "HDRI / OpenEXR" {.hdr .exr}] \
+        [list "HDR Radiance" {.hdr}] \
+        [list "OpenEXR" {.exr}] \
+        [list "Todos los archivos" *]]
+    set chosen [tk_getOpenFile -title "Seleccionar World Environment HDRI" -filetypes $types]
+    if {$chosen ne ""} {
+        set blender_hdri_path [file normalize $chosen]
+    }
+}
+
+proc ::Render2K::clear_hdri {} {
+    variable blender_hdri_path
+    set blender_hdri_path ""
+}
+
+proc ::Render2K::lighting_preset {preset} {
+    variable blender_light_multiplier
+    variable blender_key_strength
+    variable blender_fill_strength
+    variable blender_rim_strength
+    variable blender_sun_angle
+    variable blender_ambient_strength
+    variable blender_exposure
+    switch -- $preset {
+        bright {
+            set blender_light_multiplier 1.0
+            set blender_key_strength 4.0
+            set blender_fill_strength 2.0
+            set blender_rim_strength 2.5
+            set blender_sun_angle 20.0
+            set blender_ambient_strength 0.65
+            set blender_exposure 0.35
+        }
+        soft {
+            set blender_light_multiplier 1.0
+            set blender_key_strength 3.2
+            set blender_fill_strength 2.4
+            set blender_rim_strength 1.8
+            set blender_sun_angle 35.0
+            set blender_ambient_strength 0.85
+            set blender_exposure 0.20
+        }
+        contrast {
+            set blender_light_multiplier 1.0
+            set blender_key_strength 5.0
+            set blender_fill_strength 1.2
+            set blender_rim_strength 3.2
+            set blender_sun_angle 12.0
+            set blender_ambient_strength 0.40
+            set blender_exposure 0.30
+        }
+    }
 }
 
 proc ::Render2K::update_background_controls {} {
     variable w
     variable blender_background_mode
     if {$w eq "" || [llength [info commands winfo]] == 0} { return }
-    set scale $w.main.r.bl.s5.s
-    if {[catch {winfo exists $scale} exists] || !$exists} { return }
-    set state [expr {$blender_background_mode eq "world" ? "normal" : "disabled"}]
-    $scale configure -state $state
+    set l $w.main.l
+    if {[catch {winfo exists $l.light} exists] || !$exists} { return }
+
+    set ambient_state [expr {$blender_background_mode eq "flat" ? "normal" : "disabled"}]
+    set world_state   [expr {$blender_background_mode eq "world" ? "normal" : "disabled"}]
+    set hdri_state    [expr {$blender_background_mode eq "hdri" ? "normal" : "disabled"}]
+
+    foreach widget [list $l.light.s2.amb $l.light.s4.world] state [list $ambient_state $world_state] {
+        catch { $widget configure -state $state }
+    }
+    foreach widget [list $l.light.s4.hdri $l.light.s5.path $l.light.s5.open $l.light.s5.clear \
+                         $l.light.s6.visible $l.light.s6.rot] {
+        catch { $widget configure -state $hdri_state }
+    }
 }
 
 proc ::Render2K::update_resolution_fields {} {
@@ -2609,7 +2803,7 @@ proc ::Render2K::render2k_window {} {
     set w ""
     if {[winfo exists .render2k]} { catch { destroy .render2k } }
     set w [toplevel .render2k]
-    wm title $w "Blender Render (VMD) - v5.1"
+    wm title $w "Blender Render (VMD) - v5.2"
     wm resizable $w 0 0
     wm protocol $w WM_DELETE_WINDOW ::Render2K::close_window
 
@@ -2626,22 +2820,26 @@ proc ::Render2K::render2k_window {} {
 
     frame $w.bar
     pack $w.bar -fill x -padx 6
-    button $w.bar.b1 -text "Renderizado" -width 18 -relief sunken -bg "#90caf9" \
+    button $w.bar.b1 -text "Renderizado" -width 14 -relief sunken -bg "#90caf9" \
         -command [list ::Render2K::show_tab r]
-    button $w.bar.b2 -text "Materiales Blender" -width 20 -relief raised -bg "#e0e0e0" \
+    button $w.bar.b2 -text "Iluminacion" -width 14 -relief raised -bg "#e0e0e0" \
+        -command [list ::Render2K::show_tab l]
+    button $w.bar.b3 -text "Materiales" -width 16 -relief raised -bg "#e0e0e0" \
         -command [list ::Render2K::show_tab m]
-    button $w.bar.b3 -text "Película Blender" -width 18 -relief raised -bg "#e0e0e0" \
+    button $w.bar.b4 -text "Pelicula Blender" -width 16 -relief raised -bg "#e0e0e0" \
         -command [list ::Render2K::show_tab v]
-    pack $w.bar.b1 $w.bar.b2 $w.bar.b3 -side left -padx 2 -pady 2 -expand 1 -fill x
+    pack $w.bar.b1 $w.bar.b2 $w.bar.b3 $w.bar.b4 -side left -padx 2 -pady 2 -expand 1 -fill x
 
     frame $w.main
     pack $w.main -fill both -expand 1 -padx 6 -pady 2
     frame $w.main.r
+    frame $w.main.l
     frame $w.main.m
     frame $w.main.v
 
     # ===================== PESTANA RENDERIZADO =====================
     set r $w.main.r
+    set l $w.main.l
 
     labelframe $r.eng -text "Motor Blender" -font {-weight bold -size 9} -padx 6 -pady 4
     pack $r.eng -side top -fill x -pady 2
@@ -2677,32 +2875,97 @@ proc ::Render2K::render2k_window {} {
     pack $r.bl.s2.a -side left -padx 4
     pack $r.bl.s2.o -side left -padx 12
 
-    frame $r.bl.s3; pack $r.bl.s3 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s3.l -text "Fondo Blender:" -font {-size 9} -width 14 -anchor w
-    tk_optionMenu $r.bl.s3.m ::Render2K::bg_color black white "8" current
-    pack $r.bl.s3.l -side left -padx 4
-    pack $r.bl.s3.m -side left -padx 4
+    labelframe $l.light -text "Iluminacion y fondo" -font {-weight bold -size 9} -padx 6 -pady 4
+    pack $l.light -side top -fill x -pady 2
 
-    frame $r.bl.s4; pack $r.bl.s4 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s4.l -text "Modo de fondo:" -font {-size 9} -width 14 -anchor w
-    radiobutton $r.bl.s4.flat -text "Plano sin iluminar" -font {-size 9} \
+    frame $l.light.s0; pack $l.light.s0 -side top -fill x -pady 1
+    label $l.light.s0.l -text "Preset:" -font {-size 9} -width 12 -anchor w
+    button $l.light.s0.b1 -text "Estudio claro" -font {-size 8} -command {::Render2K::lighting_preset bright}
+    button $l.light.s0.b2 -text "Suave" -font {-size 8} -command {::Render2K::lighting_preset soft}
+    button $l.light.s0.b3 -text "Contraste" -font {-size 8} -command {::Render2K::lighting_preset contrast}
+    label $l.light.s0.el -text "Exposicion:" -font {-size 9}
+    spinbox $l.light.s0.exp -from -5.0 -to 5.0 -increment 0.05 -width 6 \
+        -textvariable ::Render2K::blender_exposure -font {-size 9}
+    pack $l.light.s0.l $l.light.s0.b1 $l.light.s0.b2 $l.light.s0.b3 -side left -padx {4 2}
+    pack $l.light.s0.exp $l.light.s0.el -side right -padx {2 4}
+
+    frame $l.light.s1; pack $l.light.s1 -side top -fill x -pady 1
+    label $l.light.s1.l -text "Luces estudio:" -font {-size 9} -width 12 -anchor w
+    label $l.light.s1.kl -text "Key" -font {-size 8}
+    spinbox $l.light.s1.key -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_key_strength -font {-size 9}
+    label $l.light.s1.fl -text "Fill" -font {-size 8}
+    spinbox $l.light.s1.fill -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_fill_strength -font {-size 9}
+    label $l.light.s1.rl -text "Rim" -font {-size 8}
+    spinbox $l.light.s1.rim -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_rim_strength -font {-size 9}
+    label $l.light.s1.ml -text "Global" -font {-size 8}
+    spinbox $l.light.s1.mul -from 0.0 -to 5.0 -increment 0.05 -width 5 \
+        -textvariable ::Render2K::blender_light_multiplier -font {-size 9}
+    pack $l.light.s1.l $l.light.s1.kl $l.light.s1.key $l.light.s1.fl $l.light.s1.fill \
+         $l.light.s1.rl $l.light.s1.rim $l.light.s1.ml $l.light.s1.mul -side left -padx {4 2}
+
+    frame $l.light.s2; pack $l.light.s2 -side top -fill x -pady 1
+    label $l.light.s2.l -text "Ambiente:" -font {-size 9} -width 12 -anchor w
+    scale $l.light.s2.amb -from 0.0 -to 3.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_ambient_strength -length 150 -showvalue 1
+    label $l.light.s2.al -text "Suavidad SUN:" -font {-size 8}
+    spinbox $l.light.s2.angle -from 0.1 -to 90.0 -increment 1.0 -width 6 \
+        -textvariable ::Render2K::blender_sun_angle -font {-size 9}
+    label $l.light.s2.deg -text "deg" -font {-size 8}
+    pack $l.light.s2.l $l.light.s2.amb $l.light.s2.al $l.light.s2.angle $l.light.s2.deg \
+        -side left -padx {4 2}
+
+    frame $l.light.s3; pack $l.light.s3 -side top -fill x -pady 1
+    label $l.light.s3.l -text "Fondo:" -font {-size 9} -width 12 -anchor w
+    tk_optionMenu $l.light.s3.color ::Render2K::bg_color white black "8" current
+    radiobutton $l.light.s3.flat -text "Plano" -font {-size 9} \
         -variable ::Render2K::blender_background_mode -value flat \
         -command ::Render2K::update_background_controls
-    radiobutton $r.bl.s4.world -text "Mundo ilumina" -font {-size 9} \
+    radiobutton $l.light.s3.world -text "World color" -font {-size 9} \
         -variable ::Render2K::blender_background_mode -value world \
         -command ::Render2K::update_background_controls
-    pack $r.bl.s4.l -side left -padx 4
-    pack $r.bl.s4.flat $r.bl.s4.world -side left -padx 4
+    radiobutton $l.light.s3.hdri -text "HDRI" -font {-size 9} \
+        -variable ::Render2K::blender_background_mode -value hdri \
+        -command ::Render2K::update_background_controls
+    pack $l.light.s3.l $l.light.s3.color $l.light.s3.flat $l.light.s3.world $l.light.s3.hdri \
+        -side left -padx {4 3}
 
-    frame $r.bl.s5; pack $r.bl.s5 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s5.l -text "Potencia mundo:" -font {-size 9} -width 14 -anchor w
-    scale $r.bl.s5.s -from 0.0 -to 3.0 -resolution 0.05 -orient horizontal -font {-size 9} \
-        -variable ::Render2K::blender_bg_strength -length 190 -showvalue 1
-    label $r.bl.s5.note -text "Plano usa el color exacto sin afectar luz ni reflejos." \
-        -font {-size 8} -anchor w -fg "#555555"
-    pack $r.bl.s5.l -side left -padx 4
-    pack $r.bl.s5.s -side left -padx 4
-    pack $r.bl.s5.note -side left -padx 4
+    frame $l.light.s4; pack $l.light.s4 -side top -fill x -pady 1
+    label $l.light.s4.l -text "Potencias:" -font {-size 9} -width 12 -anchor w
+    label $l.light.s4.wl -text "World" -font {-size 8}
+    scale $l.light.s4.world -from 0.0 -to 10.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_bg_strength -length 115 -showvalue 1
+    label $l.light.s4.hl -text "HDRI" -font {-size 8}
+    scale $l.light.s4.hdri -from 0.0 -to 10.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_hdri_strength -length 115 -showvalue 1
+    pack $l.light.s4.l $l.light.s4.wl $l.light.s4.world $l.light.s4.hl $l.light.s4.hdri \
+        -side left -padx {4 2}
+
+    frame $l.light.s5; pack $l.light.s5 -side top -fill x -pady 1
+    label $l.light.s5.l -text "HDRI:" -font {-size 9} -width 12 -anchor w
+    entry $l.light.s5.path -textvariable ::Render2K::blender_hdri_path -font {-size 8} -width 40
+    button $l.light.s5.open -text "Abrir..." -font {-size 8} -command ::Render2K::choose_hdri
+    button $l.light.s5.clear -text "X" -font {-size 8} -command ::Render2K::clear_hdri
+    pack $l.light.s5.l -side left -padx 4
+    pack $l.light.s5.path -side left -padx 2 -fill x -expand 1
+    pack $l.light.s5.open $l.light.s5.clear -side left -padx 2
+
+    frame $l.light.s6; pack $l.light.s6 -side top -fill x -pady 1
+    label $l.light.s6.l -text "HDRI vista:" -font {-size 9} -width 12 -anchor w
+    checkbutton $l.light.s6.visible -text "Mostrar HDRI en el fondo" -font {-size 8} \
+        -variable ::Render2K::blender_hdri_visible
+    label $l.light.s6.rl -text "Rotacion:" -font {-size 8}
+    spinbox $l.light.s6.rot -from -360.0 -to 360.0 -increment 5.0 -width 7 \
+        -textvariable ::Render2K::blender_hdri_rotation -font {-size 9}
+    label $l.light.s6.deg -text "deg" -font {-size 8}
+    pack $l.light.s6.l $l.light.s6.visible $l.light.s6.rl $l.light.s6.rot $l.light.s6.deg \
+        -side left -padx {4 2}
+
+    label $l.light.note -text "Recomendado: color blanco + modo Plano + Estudio claro. El fondo queda blanco, pero el modelo recibe luz ambiente y las tres luces de estudio. HDRI puede iluminar/reflejar manteniendo el fondo blanco si 'Mostrar HDRI' esta desactivado." \
+        -font {-size 8} -anchor w -justify left -fg "#555555" -wraplength 520
+    pack $l.light.note -side top -anchor w -padx 4 -pady {2 1}
 
     labelframe $r.res -text "Resolucion" -font {-weight bold -size 9} -padx 6 -pady 4
     pack $r.res -side top -fill x -pady 2
@@ -2902,6 +3165,6 @@ vmd_install_extension render2k render2k_tk "Rendering/Blender Render"
 
 ::Render2K::detect_all
 puts "=========================================="
-puts "Blender Render v5.1 cargado"
+puts "Blender Render v5.2 cargado"
 puts "Acceso: Extensions -> Rendering -> Blender Render"
 puts "=========================================="

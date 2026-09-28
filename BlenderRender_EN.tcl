@@ -1,5 +1,5 @@
 ##
-## Blender Render (v5.1) - English interface for VMD (EN)
+## Blender Render (v5.2) - English interface for VMD (EN)
 ##
 
 # This companion script keeps the English interface synchronized with the
@@ -10,8 +10,10 @@ if {[namespace exists ::Render2KEnglish]} {
 
 namespace eval ::Render2KEnglish {
     variable translations [list \
+        "Render2K Blender (v5.2) - Renderizador Blender para VMD" "Render2K Blender (v5.2) - Blender renderer for VMD" \
         "Render2K Blender (v5.1) - Renderizador Blender para VMD" "Render2K Blender (v5.1) - Blender renderer for VMD" \
         "Perfiles Principled BSDF configurables desde VMD." "Principled BSDF profiles configurable from VMD." \
+        "Blender Render v5.2 cargado" "Blender Render v5.2 loaded" \
         "Blender Render v5.1 cargado" "Blender Render v5.1 loaded" \
         "Acceso: Extensions -> Rendering -> Blender Render" "Access: Extensions -> Rendering -> Blender Render" \
         "Listo para renderizar una pelicula." "Ready to render a movie." \
@@ -197,6 +199,22 @@ namespace eval ::Render2KEnglish {
         "c\u00e1mara" "camera" \
         "bloqueada" "locked" \
         "por frame" "per frame" \
+        "Seleccionaste HDRI pero no indicaste un archivo .hdr/.exr." "HDRI mode was selected but no .hdr/.exr file was specified." \
+        "No se encontro el HDRI:" "HDRI file was not found:" \
+        "No se pudo cargar HDRI %s: %s" "Could not load HDRI %s: %s" \
+        "Modo de fondo desconocido: %s" "Unknown background mode: %s" \
+        "El fondo blanco/plano requiere el transform Standard" "The white/flat background requires the Standard transform" \
+        "Iluminacion de estudio. SUN hace que el resultado no dependa del tamano" "Studio lighting. SUN makes the result independent of the size" \
+        "absoluto del modelo molecular. Se exponen intensidades y suavidad en VMD." "of the molecular model. Intensities and softness are exposed in VMD." \
+        "Fondo visible e iluminacion del World." "Visible background and World lighting." \
+        "FLAT: la camara ve el color elegido (blanco por defecto), mientras que" "FLAT: the camera sees the selected color (white by default), while" \
+        "materiales/reflejos reciben un ambiente blanco regulable. Evita el" "materials/reflections receive an adjustable white ambient light. This avoids the" \
+        "problema anterior donde el World era negro y la escena quedaba oscura." "previous issue where the World was black and the scene became too dark." \
+        "WORLD: el color del World ilumina y tambien es visible." "WORLD: the World color illuminates the scene and is also visible." \
+        "HDRI: la textura ilumina/refleja; por defecto la camara sigue viendo el" "HDRI: the texture provides lighting/reflections; by default the camera still sees the" \
+        "fondo elegido, aunque se puede activar \"Ver HDRI\"." "selected background, although HDRI visibility can be enabled." \
+        "Standard conserva un fondo blanco puro. Si el HDRI es visible, AgX" "Standard preserves a pure white background. If the HDRI is visible, AgX" \
+        "suele dar un resultado fotografico mas agradable y mayor rango dinamico." "usually gives a more photographic result with greater dynamic range." \
         "Personalizada:" "Custom:" \
         "Seleccionada:" "Selected:"]
 }
@@ -286,6 +304,19 @@ proc ::Render2K::gen_blender_py {pyscript args} {
     return $result
 }
 
+proc ::Render2K::choose_hdri {} {
+    variable blender_hdri_path
+    set types [list \
+        [list "HDRI / OpenEXR" {.hdr .exr}] \
+        [list "HDR Radiance" {.hdr}] \
+        [list "OpenEXR" {.exr}] \
+        [list "All files" *]]
+    set chosen [tk_getOpenFile -title "Select World Environment HDRI" -filetypes $types]
+    if {$chosen ne ""} {
+        set blender_hdri_path [file normalize $chosen]
+    }
+}
+
 proc ::Render2K::update_resolution_fields {} {
     variable w
     variable resolution_preset
@@ -325,7 +356,7 @@ proc ::Render2K::render2k_window {} {
     set w ""
     if {[winfo exists .render2k]} { catch { destroy .render2k } }
     set w [toplevel .render2k]
-    wm title $w "Blender Render (VMD) - v5.1"
+    wm title $w "Blender Render (VMD) - v5.2"
     wm resizable $w 0 0
     wm protocol $w WM_DELETE_WINDOW ::Render2K::close_window
 
@@ -342,21 +373,27 @@ proc ::Render2K::render2k_window {} {
 
     frame $w.bar
     pack $w.bar -fill x -padx 6
-    button $w.bar.b1 -text "Render" -width 18 -relief sunken -bg "#90caf9" \
+    button $w.bar.b1 -text "Render" -width 14 -relief sunken -bg "#90caf9" \
         -command [list ::Render2K::show_tab r]
-    button $w.bar.b2 -text "Blender Materials" -width 20 -relief raised -bg "#e0e0e0" \
+    button $w.bar.b2 -text "Lighting" -width 14 -relief raised -bg "#e0e0e0" \
+        -command [list ::Render2K::show_tab l]
+    button $w.bar.b3 -text "Materials" -width 16 -relief raised -bg "#e0e0e0" \
         -command [list ::Render2K::show_tab m]
-    button $w.bar.b3 -text "Blender Movie" -width 18 -relief raised -bg "#e0e0e0" \
+    button $w.bar.b4 -text "Blender Movie" -width 16 -relief raised -bg "#e0e0e0" \
         -command [list ::Render2K::show_tab v]
-    pack $w.bar.b1 $w.bar.b2 $w.bar.b3 -side left -padx 2 -pady 2 -expand 1 -fill x
+    pack $w.bar.b1 $w.bar.b2 $w.bar.b3 $w.bar.b4 -side left -padx 2 -pady 2 -expand 1 -fill x
 
     frame $w.main
     pack $w.main -fill both -expand 1 -padx 6 -pady 2
     frame $w.main.r
+    frame $w.main.l
     frame $w.main.m
     frame $w.main.v
 
+    # ========================= RENDER TAB =========================
     set r $w.main.r
+    set l $w.main.l
+
     labelframe $r.eng -text "Blender Engine" -font {-weight bold -size 9} -padx 6 -pady 4
     pack $r.eng -side top -fill x -pady 2
     frame $r.eng.row
@@ -391,32 +428,98 @@ proc ::Render2K::render2k_window {} {
     pack $r.bl.s2.a -side left -padx 4
     pack $r.bl.s2.o -side left -padx 12
 
-    frame $r.bl.s3; pack $r.bl.s3 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s3.l -text "Blender background:" -font {-size 9} -width 14 -anchor w
-    tk_optionMenu $r.bl.s3.m ::Render2K::bg_color black white "8" current
-    pack $r.bl.s3.l -side left -padx 4
-    pack $r.bl.s3.m -side left -padx 4
+    # ======================== LIGHTING TAB ========================
+    labelframe $l.light -text "Lighting and Background" -font {-weight bold -size 9} -padx 6 -pady 4
+    pack $l.light -side top -fill x -pady 2
 
-    frame $r.bl.s4; pack $r.bl.s4 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s4.l -text "Background mode:" -font {-size 9} -width 14 -anchor w
-    radiobutton $r.bl.s4.flat -text "Flat, unlit" -font {-size 9} \
+    frame $l.light.s0; pack $l.light.s0 -side top -fill x -pady 1
+    label $l.light.s0.l -text "Preset:" -font {-size 9} -width 12 -anchor w
+    button $l.light.s0.b1 -text "Bright Studio" -font {-size 8} -command {::Render2K::lighting_preset bright}
+    button $l.light.s0.b2 -text "Soft" -font {-size 8} -command {::Render2K::lighting_preset soft}
+    button $l.light.s0.b3 -text "Contrast" -font {-size 8} -command {::Render2K::lighting_preset contrast}
+    label $l.light.s0.el -text "Exposure:" -font {-size 9}
+    spinbox $l.light.s0.exp -from -5.0 -to 5.0 -increment 0.05 -width 6 \
+        -textvariable ::Render2K::blender_exposure -font {-size 9}
+    pack $l.light.s0.l $l.light.s0.b1 $l.light.s0.b2 $l.light.s0.b3 -side left -padx {4 2}
+    pack $l.light.s0.exp $l.light.s0.el -side right -padx {2 4}
+
+    frame $l.light.s1; pack $l.light.s1 -side top -fill x -pady 1
+    label $l.light.s1.l -text "Studio lights:" -font {-size 9} -width 12 -anchor w
+    label $l.light.s1.kl -text "Key" -font {-size 8}
+    spinbox $l.light.s1.key -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_key_strength -font {-size 9}
+    label $l.light.s1.fl -text "Fill" -font {-size 8}
+    spinbox $l.light.s1.fill -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_fill_strength -font {-size 9}
+    label $l.light.s1.rl -text "Rim" -font {-size 8}
+    spinbox $l.light.s1.rim -from 0.0 -to 20.0 -increment 0.1 -width 5 \
+        -textvariable ::Render2K::blender_rim_strength -font {-size 9}
+    label $l.light.s1.ml -text "Global" -font {-size 8}
+    spinbox $l.light.s1.mul -from 0.0 -to 5.0 -increment 0.05 -width 5 \
+        -textvariable ::Render2K::blender_light_multiplier -font {-size 9}
+    pack $l.light.s1.l $l.light.s1.kl $l.light.s1.key $l.light.s1.fl $l.light.s1.fill \
+         $l.light.s1.rl $l.light.s1.rim $l.light.s1.ml $l.light.s1.mul -side left -padx {4 2}
+
+    frame $l.light.s2; pack $l.light.s2 -side top -fill x -pady 1
+    label $l.light.s2.l -text "Ambient:" -font {-size 9} -width 12 -anchor w
+    scale $l.light.s2.amb -from 0.0 -to 3.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_ambient_strength -length 150 -showvalue 1
+    label $l.light.s2.al -text "SUN softness:" -font {-size 8}
+    spinbox $l.light.s2.angle -from 0.1 -to 90.0 -increment 1.0 -width 6 \
+        -textvariable ::Render2K::blender_sun_angle -font {-size 9}
+    label $l.light.s2.deg -text "deg" -font {-size 8}
+    pack $l.light.s2.l $l.light.s2.amb $l.light.s2.al $l.light.s2.angle $l.light.s2.deg \
+        -side left -padx {4 2}
+
+    frame $l.light.s3; pack $l.light.s3 -side top -fill x -pady 1
+    label $l.light.s3.l -text "Background:" -font {-size 9} -width 12 -anchor w
+    tk_optionMenu $l.light.s3.color ::Render2K::bg_color white black "8" current
+    radiobutton $l.light.s3.flat -text "Flat" -font {-size 9} \
         -variable ::Render2K::blender_background_mode -value flat \
         -command ::Render2K::update_background_controls
-    radiobutton $r.bl.s4.world -text "World lighting" -font {-size 9} \
+    radiobutton $l.light.s3.world -text "World color" -font {-size 9} \
         -variable ::Render2K::blender_background_mode -value world \
         -command ::Render2K::update_background_controls
-    pack $r.bl.s4.l -side left -padx 4
-    pack $r.bl.s4.flat $r.bl.s4.world -side left -padx 4
+    radiobutton $l.light.s3.hdri -text "HDRI" -font {-size 9} \
+        -variable ::Render2K::blender_background_mode -value hdri \
+        -command ::Render2K::update_background_controls
+    pack $l.light.s3.l $l.light.s3.color $l.light.s3.flat $l.light.s3.world $l.light.s3.hdri \
+        -side left -padx {4 3}
 
-    frame $r.bl.s5; pack $r.bl.s5 -side top -fill x -pady 2 -anchor w
-    label $r.bl.s5.l -text "World strength:" -font {-size 9} -width 14 -anchor w
-    scale $r.bl.s5.s -from 0.0 -to 3.0 -resolution 0.05 -orient horizontal -font {-size 9} \
-        -variable ::Render2K::blender_bg_strength -length 190 -showvalue 1
-    label $r.bl.s5.note -text "Flat mode uses the exact color without affecting light or reflections." \
-        -font {-size 8} -anchor w -fg "#555555"
-    pack $r.bl.s5.l -side left -padx 4
-    pack $r.bl.s5.s -side left -padx 4
-    pack $r.bl.s5.note -side left -padx 4
+    frame $l.light.s4; pack $l.light.s4 -side top -fill x -pady 1
+    label $l.light.s4.l -text "Strengths:" -font {-size 9} -width 12 -anchor w
+    label $l.light.s4.wl -text "World" -font {-size 8}
+    scale $l.light.s4.world -from 0.0 -to 10.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_bg_strength -length 115 -showvalue 1
+    label $l.light.s4.hl -text "HDRI" -font {-size 8}
+    scale $l.light.s4.hdri -from 0.0 -to 10.0 -resolution 0.05 -orient horizontal -font {-size 8} \
+        -variable ::Render2K::blender_hdri_strength -length 115 -showvalue 1
+    pack $l.light.s4.l $l.light.s4.wl $l.light.s4.world $l.light.s4.hl $l.light.s4.hdri \
+        -side left -padx {4 2}
+
+    frame $l.light.s5; pack $l.light.s5 -side top -fill x -pady 1
+    label $l.light.s5.l -text "HDRI:" -font {-size 9} -width 12 -anchor w
+    entry $l.light.s5.path -textvariable ::Render2K::blender_hdri_path -font {-size 8} -width 40
+    button $l.light.s5.open -text "Open..." -font {-size 8} -command ::Render2K::choose_hdri
+    button $l.light.s5.clear -text "X" -font {-size 8} -command ::Render2K::clear_hdri
+    pack $l.light.s5.l -side left -padx 4
+    pack $l.light.s5.path -side left -padx 2 -fill x -expand 1
+    pack $l.light.s5.open $l.light.s5.clear -side left -padx 2
+
+    frame $l.light.s6; pack $l.light.s6 -side top -fill x -pady 1
+    label $l.light.s6.l -text "HDRI view:" -font {-size 9} -width 12 -anchor w
+    checkbutton $l.light.s6.visible -text "Show HDRI in background" -font {-size 8} \
+        -variable ::Render2K::blender_hdri_visible
+    label $l.light.s6.rl -text "Rotation:" -font {-size 8}
+    spinbox $l.light.s6.rot -from -360.0 -to 360.0 -increment 5.0 -width 7 \
+        -textvariable ::Render2K::blender_hdri_rotation -font {-size 9}
+    label $l.light.s6.deg -text "deg" -font {-size 8}
+    pack $l.light.s6.l $l.light.s6.visible $l.light.s6.rl $l.light.s6.rot $l.light.s6.deg \
+        -side left -padx {4 2}
+
+    label $l.light.note -text "Recommended: white background + Flat mode + Bright Studio. The background stays white while the model receives ambient light and all three studio lights. HDRI can provide lighting/reflections while keeping the white background when 'Show HDRI in background' is disabled." \
+        -font {-size 8} -anchor w -justify left -fg "#555555" -wraplength 520
+    pack $l.light.note -side top -anchor w -padx 4 -pady {2 1}
 
     labelframe $r.res -text "Resolution" -font {-weight bold -size 9} -padx 6 -pady 4
     pack $r.res -side top -fill x -pady 2
@@ -462,6 +565,7 @@ proc ::Render2K::render2k_window {} {
         pack $r.file.f2.$fmt -side left -padx 4
     }
 
+    # ========================= MOVIE TAB ==========================
     set v $w.main.v
     label $v.info -text "Render a VMD trajectory with the same Blender pipeline used for still images.\nVMD exports each frame; Blender processes them in a single batch; FFmpeg creates the MP4. Changes made during execution apply to the next batch." \
         -anchor w -font {-size 8} -justify left -fg "#555555"
@@ -533,6 +637,7 @@ proc ::Render2K::render2k_window {} {
         -padx 14 -pady 5 -font {-size 9}
     pack $v.actions.start $v.actions.cancel -side left -padx 6
 
+    # ======================= MATERIALS TAB ========================
     set m $w.main.m
     label $m.info -text "VMD only selects the profile and provides the geometry color.\nThe following parameters are applied to Blender's Principled BSDF." \
         -anchor w -font {-size 8} -justify left -fg "#555555"
@@ -588,6 +693,7 @@ proc ::Render2K::render2k_window {} {
     pack $m.status -side top -fill x -padx 6 -pady {0 4}
     load_blender_material
 
+    # ====================== ACTION BUTTONS ========================
     frame $w.act
     pack $w.act -side top -pady 4
     button $w.act.render -text "RENDER IMAGE" -command {::Render2K::do_render} \
